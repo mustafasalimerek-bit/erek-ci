@@ -54,6 +54,42 @@ on:
         value: ${{ jobs.build.outputs.build_number }}
 
 jobs:
+  preflight:
+    name: App Store Connect preflight (ubuntu, 1x)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch CI scripts
+        uses: actions/checkout@v4
+        with:
+          repository: mustafasalimerek-bit/erek-ci
+          path: .erek-ci
+          ref: main
+
+      - name: This marketing version can still take builds
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+        run: |
+          # Once a version ships, Apple closes its pre-release train and every
+          # further build carrying that CFBundleShortVersionString is rejected
+          # at upload — after the 10x runner has already spent 25 minutes
+          # getting there. Thirty seconds here instead.
+          mkdir -p "$RUNNER_TEMP/keys"
+          printf '%s' "$ASC_KEY_P8" > "$RUNNER_TEMP/keys/AuthKey_$ASC_KEY_ID.p8"
+          chmod 600 "$RUNNER_TEMP/keys/AuthKey_$ASC_KEY_ID.p8"
+          VERSION=$(grep -m1 '^version:' "${{ inputs.app_dir }}/pubspec.yaml" \
+                    | awk '{print $2}' | cut -d+ -f1)
+          python3 .erek-ci/scripts/asc_publish.py \
+            --key-id "$ASC_KEY_ID" --issuer-id "$ASC_ISSUER_ID" \
+            --key-path "$RUNNER_TEMP/keys/AuthKey_$ASC_KEY_ID.p8" \
+            --app-id "${{ inputs.asc_app_id }}" \
+            check-version --version "$VERSION"
+          rm -rf "$RUNNER_TEMP/keys"
+
   checks:
     name: Analyze & test (ubuntu, 1x)
     if: inputs.run_checks
@@ -83,11 +119,17 @@ jobs:
 
   build:
     name: IPA -> TestFlight (macOS, 10x)
-    needs: [checks]
-    # `always()` so the Mac still runs when checks were switched off and the
-    # job was therefore skipped — but never after a real failure.
-    if: always() && needs.checks.result != 'failure' && needs.checks.result != 'cancelled'
-    runs-on: macos-15
+    needs: [preflight, checks]
+    # preflight must have passed. `always()` is only here so the Mac still runs
+    # when checks were switched off and that job was therefore skipped.
+    if: |
+      always() && needs.preflight.result == 'success'
+      && needs.checks.result != 'failure' && needs.checks.result != 'cancelled'
+    # macos-26, not macos-15: Apple requires the iOS 26 SDK for every upload,
+    # and the macos-15 image tops out at Xcode 16.4 / iOS 18.5. A build from
+    # there is rejected at upload with "SDK version issue" — after the 10x
+    # minutes are gone.
+    runs-on: macos-26
     timeout-minutes: 60
     concurrency:
       # Two dispatches would both ask App Store Connect for the next build
@@ -108,6 +150,19 @@ jobs:
           repository: mustafasalimerek-bit/erek-ci
           path: .erek-ci
           ref: main
+
+      - name: Xcode is new enough for App Store uploads
+        run: |
+          xcodebuild -version
+          MAJOR=$(xcodebuild -version | head -1 | awk '{print $2}' | cut -d. -f1)
+          # Apple raises this floor periodically. Saying so here, in one line,
+          # beats discovering it from altool after a full archive.
+          if [ "$MAJOR" -lt 26 ]; then
+            echo "::error::Xcode $MAJOR is on this runner, but App Store Connect" \
+                 "requires the iOS 26 SDK (Xcode 26+). Check whether a newer" \
+                 "runner label is available."
+            exit 1
+          fi
 
       - uses: subosito/flutter-action@v2
         with:

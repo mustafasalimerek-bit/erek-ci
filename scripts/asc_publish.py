@@ -7,6 +7,7 @@ into two 32-byte halves here. No PyJWT, no cryptography, no requests.
 
   next-build-number   print (highest build ASC has for this app) + 1
   wait-for-build      block until a build reaches a non-PROCESSING state
+  check-version       refuse a marketing version whose train Apple has closed
 """
 
 import argparse
@@ -100,6 +101,56 @@ def cmd_next_build_number(args, token):
     print(max(numbers) + 1 if numbers else 1)
 
 
+# Once a version has shipped, Apple closes its pre-release train: any further
+# build carrying that CFBundleShortVersionString is rejected at upload with
+# "Invalid Pre-Release Train". These are the states that mean shipped.
+CLOSED_STATES = {
+    "READY_FOR_SALE",
+    "PROCESSING_FOR_APP_STORE",
+    "PENDING_APPLE_RELEASE",
+    "REPLACED_WITH_NEW_VERSION",
+    "REMOVED_FROM_SALE",
+    "DEVELOPER_REMOVED_FROM_SALE",
+}
+
+
+def cmd_check_version(args, token):
+    """Fail before a 25-minute macOS build that Apple would reject anyway."""
+    versions = api(
+        token,
+        "/apps/{}/appStoreVersions".format(args.app_id),
+        {"limit": 50},
+    ).get("data", [])
+
+    for version in versions:
+        attrs = version["attributes"]
+        if attrs.get("versionString") != args.version:
+            continue
+        state = attrs.get("appStoreState", "?")
+        if state in CLOSED_STATES:
+            raise SystemExit(
+                "App Store Connect zaten {} surumunu yayinlamis ({}).\n"
+                "  Ayni surum numarasiyla yeni build KABUL EDILMEZ.\n"
+                "  pubspec.yaml'daki `version:` satirini yukselt "
+                "(ornek {} -> {}), sonra tekrar dene.".format(
+                    args.version, state, args.version, _bump(args.version)
+                )
+            )
+        print("{} exists in state {} — still open for builds".format(args.version, state))
+        return
+    print("{} is a new version — nothing on App Store Connect blocks it".format(args.version))
+
+
+def _bump(version):
+    """Suggest the next patch, purely for the error message."""
+    parts = version.split(".")
+    try:
+        parts[-1] = str(int(parts[-1]) + 1)
+        return ".".join(parts)
+    except ValueError:
+        return version + ".1"
+
+
 def cmd_wait_for_build(args, token):
     deadline = time.time() + args.timeout
     while time.time() < deadline:
@@ -138,6 +189,10 @@ def main():
     nbn = sub.add_parser("next-build-number")
     nbn.add_argument("--version", default="", help="marketing version, e.g. 1.2.0")
     nbn.set_defaults(func=cmd_next_build_number)
+
+    cv = sub.add_parser("check-version")
+    cv.add_argument("--version", required=True, help="marketing version, e.g. 1.2.0")
+    cv.set_defaults(func=cmd_check_version)
 
     wfb = sub.add_parser("wait-for-build")
     wfb.add_argument("--version", required=True)
