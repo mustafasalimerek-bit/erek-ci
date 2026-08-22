@@ -70,6 +70,7 @@ jobs:
 
       - name: Before
         run: |
+          set -o pipefail
           python3 scripts/play_publish.py \
             --service-account "$RUNNER_TEMP/play-sa.json" \
             --package "${{ inputs.package_name }}" status | tee /tmp/before.txt
@@ -91,6 +92,7 @@ jobs:
 
       - name: After
         run: |
+          set -o pipefail
           python3 scripts/play_publish.py \
             --service-account "$RUNNER_TEMP/play-sa.json" \
             --package "${{ inputs.package_name }}" status | tee /tmp/after.txt
