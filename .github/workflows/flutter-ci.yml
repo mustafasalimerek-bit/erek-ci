@@ -53,16 +53,26 @@ jobs:
         working-directory: ${{ inputs.app_dir }}
         run: |
           # gen_l10n output is derived, so an ARB edited without regenerating
-          # shows up here as a diff instead of as missing text on a screen.
-          if [ -f l10n.yaml ]; then
-            flutter gen-l10n
-            git diff --exit-code || {
-              echo "gen-l10n produced a diff — commit the regenerated files" >&2
-              exit 1
-            }
-          else
-            echo "no l10n.yaml, skipping"
+          # should show up here as a diff rather than as missing text on a
+          # screen. That only works when the generated .dart files are actually
+          # committed — projects with no `output-dir` write into .dart_tool,
+          # which git never sees, and the check would pass no matter what.
+          if [ ! -f l10n.yaml ]; then
+            echo "no l10n.yaml — nothing to check"
+            exit 0
           fi
+          if [ "$(git ls-files 'lib/l10n/*.dart' 'lib/l10n/**/*.dart' | wc -l)" -eq 0 ]; then
+            echo "generated localizations are not tracked in git (gen_l10n writes"
+            echo "to .dart_tool here) — this check cannot detect drift, skipping"
+            exit 0
+          fi
+          flutter gen-l10n
+          # Scoped to lib/l10n on purpose: `flutter pub get` can rewrite
+          # pubspec.lock, and a repo-wide diff would fail on that instead.
+          git diff --exit-code -- lib/l10n || {
+            echo "gen-l10n changed the committed output — regenerate and commit" >&2
+            exit 1
+          }
 
       - name: Tests
         working-directory: ${{ inputs.app_dir }}
