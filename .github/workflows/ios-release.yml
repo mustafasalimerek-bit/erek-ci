@@ -178,12 +178,30 @@ jobs:
           grep -q "Apple Distribution" /tmp/ids.txt \
             || { echo "::error::no Apple Distribution identity in the keychain"; exit 1; }
 
-      - name: Flutter configure (pub get, pods, Generated.xcconfig)
+      - name: Flutter configure (pub get, Generated.xcconfig)
         working-directory: ${{ inputs.app_dir }}
         run: |
           flutter pub get
+          # --config-only writes Generated.xcconfig (which carries
+          # FLUTTER_BUILD_NUMBER into CFBundleVersion) without building. The
+          # archive below is what compiles.
           flutter build ios --release --config-only \
             --build-number=${{ steps.bn.outputs.value }}
+          test -f ios/Flutter/Generated.xcconfig \
+            || { echo "::error::Generated.xcconfig was not written"; exit 1; }
+          grep -q "FLUTTER_BUILD_NUMBER=${{ steps.bn.outputs.value }}" \
+            ios/Flutter/Generated.xcconfig \
+            || { echo "::error::the build number did not reach Generated.xcconfig"; exit 1; }
+
+      - name: CocoaPods
+        working-directory: ${{ inputs.app_dir }}/ios
+        run: |
+          # Explicit rather than relying on --config-only to have done it:
+          # podhelper.rb reads Generated.xcconfig, so this has to come after
+          # the step above, and archiving Runner.xcworkspace without Pods fails
+          # twenty minutes in on a 10x runner.
+          pod install --repo-update
+          test -d Pods || { echo "::error::pod install produced no Pods/"; exit 1; }
 
       - name: Archive
         working-directory: ${{ inputs.app_dir }}/ios
