@@ -118,6 +118,25 @@ def load_sa(path):
         return json.load(fh)
 
 
+def commit_edit(token, pkg, edit_id, sent_for_review):
+    """Commit, refusing to touch anything that is already under review.
+
+    `edits.commit` defaults to CANCEL_IN_REVIEW_AND_SUBMIT: it will cancel an
+    in-progress review and submit *everything* pending in Publishing Overview,
+    not just this release. That turns "upload a draft" into "submit whatever
+    else was half-finished in the Console", which is the opposite of what a
+    draft is for. ERROR_IF_IN_REVIEW makes it fail loudly instead.
+    """
+    params = ["changesInReviewBehavior=ERROR_IF_IN_REVIEW"]
+    if not sent_for_review:
+        params.append("changesNotSentForReview=true")
+    api(
+        token,
+        "POST",
+        "{}/applications/{}/edits/{}:commit?{}".format(API, pkg, edit_id, "&".join(params)),
+    )
+
+
 def open_edit(token, pkg):
     return api(token, "POST", "{}/applications/{}/edits".format(API, pkg), body={})["id"]
 
@@ -191,15 +210,33 @@ def cmd_upload(args):
                 notes = [{"language": k, "text": v} for k, v in notes.items()]
             release["releaseNotes"] = notes
 
+        # A track PUT replaces the whole release list. Sending only the new
+        # release therefore *removes* whatever that track was already serving —
+        # which is how Waqt's internal track ended up holding nothing but a
+        # draft. Keep every other active release and replace only same-status
+        # ones.
+        existing = api(
+            token,
+            "GET",
+            "{}/applications/{}/edits/{}/tracks/{}".format(API, args.package, edit_id, args.track),
+        ).get("releases", [])
+        keep = [r for r in existing if r.get("status") != args.status]
+        if keep:
+            print("track  keeping {} existing release(s): {}".format(
+                len(keep),
+                ", ".join("{}={}".format(r.get("status"), ",".join(r.get("versionCodes", [])))
+                          for r in keep)))
+
         api(
             token,
             "PUT",
             "{}/applications/{}/edits/{}/tracks/{}".format(API, args.package, edit_id, args.track),
-            body={"track": args.track, "releases": [release]},
+            body={"track": args.track, "releases": keep + [release]},
         )
         print("track  {} <- versionCode {} (status={})".format(args.track, version_code, args.status))
 
-        api(token, "POST", "{}/applications/{}/edits/{}:commit".format(API, args.package, edit_id))
+        # A draft is not a submission, so it must not be sent for review.
+        commit_edit(token, args.package, edit_id, sent_for_review=args.status != "draft")
         print("commit OK")
     except BaseException:
         delete_edit(token, args.package, edit_id)
@@ -214,6 +251,12 @@ def cmd_upload(args):
             "GET",
             "{}/applications/{}/edits/{}/bundles".format(API, args.package, verify_edit),
         ).get("bundles", [])
+        track_after = api(
+            token,
+            "GET",
+            "{}/applications/{}/edits/{}/tracks/{}".format(
+                API, args.package, verify_edit, args.track),
+        )
     finally:
         delete_edit(token, args.package, verify_edit)
 
@@ -222,7 +265,25 @@ def cmd_upload(args):
         raise SystemExit("post-commit read-back: versionCode {} not on Play".format(version_code))
     if match[0].get("sha1", "").lower() != local_sha1.lower():
         raise SystemExit("post-commit read-back: sha1 drifted")
-    print("verify versionCode {} present, sha1 matches local build".format(version_code))
+
+    # The bundle existing proves the upload; it says nothing about the track.
+    # Assert the release actually landed where it was asked to land.
+    on_track = [
+        r for r in track_after.get("releases", [])
+        if str(version_code) in r.get("versionCodes", [])
+    ]
+    if not on_track:
+        raise SystemExit(
+            "post-commit read-back: versionCode {} is not on the {} track".format(
+                version_code, args.track)
+        )
+    if on_track[0].get("status") != args.status:
+        raise SystemExit(
+            "post-commit read-back: {} on {} has status {}, expected {}".format(
+                version_code, args.track, on_track[0].get("status"), args.status)
+        )
+    print("verify versionCode {} on {} as {}, sha1 matches local build".format(
+        version_code, args.track, args.status))
 
     if os.environ.get("GITHUB_OUTPUT"):
         with open(os.environ["GITHUB_OUTPUT"], "a") as fh:
@@ -304,8 +365,7 @@ def cmd_promote(args):
             ),
             body={"track": args.target, "releases": [release]},
         )
-        api(token, "POST", "{}/applications/{}/edits/{}:commit".format(
-            API, args.package, edit_id))
+        commit_edit(token, args.package, edit_id, sent_for_review=args.status != "draft")
         print("commit OK")
     except BaseException:
         delete_edit(token, args.package, edit_id)

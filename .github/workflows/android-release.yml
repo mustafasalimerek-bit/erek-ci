@@ -202,18 +202,27 @@ jobs:
         working-directory: ${{ inputs.app_dir }}
         run: flutter build appbundle --release --build-number=${{ steps.vc.outputs.value }}
 
-      - name: Confirm the AAB is signed with the upload key
+      - name: The AAB is signed with the upload key
         env:
+          STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
         run: |
+          set -o pipefail
           AAB="${{ inputs.app_dir }}/build/app/outputs/bundle/release/app-release.aab"
-          # An unsigned AAB builds cleanly and is rejected only at upload time,
-          # after the minutes have been spent. Check it here instead.
-          if ! unzip -l "$AAB" | grep -q 'META-INF/.*\.\(RSA\|DSA\|EC\)'; then
-            echo "AAB carries no signature block" >&2
+          # Checking for a META-INF/*.RSA filename proves only that a file with
+          # that name exists. A debug-signed bundle has one too, and Play
+          # rejects it hours later — or, on a first upload, accepts the wrong
+          # signer permanently. Compare the certificate instead.
+          fp() { grep -m1 'SHA256:' | tr -d ' \t' | cut -d: -f2-; }
+          AAB_FP=$(keytool -printcert -jarfile "$AAB" | fp)
+          KEY_FP=$(keytool -list -v -keystore "$RUNNER_TEMP/upload.jks" \
+                     -storepass "$STORE_PASSWORD" -alias "$KEY_ALIAS" | fp)
+          if [ -z "$AAB_FP" ] || [ "$AAB_FP" != "$KEY_FP" ]; then
+            echo "::error::The AAB was not signed with the upload key." \
+                 "aab=$AAB_FP key=$KEY_FP"
             exit 1
           fi
-          echo "signed OK ($(du -h "$AAB" | cut -f1))"
+          echo "signed by $AAB_FP ($(du -h "$AAB" | cut -f1))"
 
       - name: Upload AAB artifact
         uses: actions/upload-artifact@v4

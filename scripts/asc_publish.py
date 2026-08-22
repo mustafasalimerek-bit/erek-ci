@@ -191,7 +191,13 @@ def _bump(version):
 
 def cmd_wait_for_build(args, token):
     deadline = time.time() + args.timeout
+    # An App Store Connect JWT may not live longer than 20 minutes, but
+    # processing routinely takes longer than that. Reusing one token for the
+    # whole wait means a 401 halfway through — reported as "the build never
+    # became valid" when it was still processing fine. Mint a fresh one each
+    # time round.
     while time.time() < deadline:
+        token = jwt(args.key_path, args.key_id, args.issuer_id)
         for build in builds(token, args.app_id, args.version, limit=20):
             if build["attributes"].get("version") != str(args.build):
                 continue
