@@ -1,0 +1,216 @@
+name: Android release (reusable)
+
+# Build a signed AAB and hand it to Google Play. Runs on ubuntu, so it costs
+# 1x Actions minutes — this is the workflow that should carry most releases.
+#
+# Two deliberate defaults:
+#   status: draft   nothing reaches a user until someone opens the Console.
+#   track: internal  the only track Play lets us fill without a data-safety
+#                    declaration in place.
+
+on:
+  workflow_call:
+    inputs:
+      app_dir:
+        description: Directory holding pubspec.yaml, relative to the repo root
+        type: string
+        default: "."
+      flutter_version:
+        type: string
+        default: "3.41.9"
+      package_name:
+        description: applicationId, e.g. com.erekstudio.waqt
+        type: string
+        required: true
+      track:
+        description: internal | alpha | beta | production
+        type: string
+        default: internal
+      status:
+        description: draft | completed
+        type: string
+        default: draft
+      release_notes_path:
+        description: 'Path to a JSON file: {"en-US": "...", "tr-TR": "..."}'
+        type: string
+        default: ""
+      run_checks:
+        description: Run analyze + tests before building
+        type: boolean
+        default: true
+      upload_to_play:
+        description: Set false to build and keep the artifact without touching Play
+        type: boolean
+        default: true
+    secrets:
+      ANDROID_KEYSTORE_B64:
+        required: true
+      ANDROID_STORE_PASSWORD:
+        required: true
+      ANDROID_KEY_PASSWORD:
+        required: true
+      ANDROID_KEY_ALIAS:
+        required: true
+      PLAY_SERVICE_ACCOUNT_JSON:
+        required: false
+    outputs:
+      version_code:
+        description: The versionCode that was built
+        value: ${{ jobs.build.outputs.version_code }}
+      sha1:
+        description: sha1 of the AAB that was uploaded
+        value: ${{ jobs.build.outputs.sha1 }}
+
+jobs:
+  build:
+    name: AAB -> Play (${{ inputs.track }}/${{ inputs.status }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    outputs:
+      version_code: ${{ steps.play.outputs.version_code }}
+      sha1: ${{ steps.play.outputs.sha1 }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch CI scripts
+        uses: actions/checkout@v4
+        with:
+          repository: mustafasalimerek-bit/erek-ci
+          path: .erek-ci
+          ref: main
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ inputs.flutter_version }}
+          channel: stable
+          cache: true
+
+      - name: Install dependencies
+        working-directory: ${{ inputs.app_dir }}
+        run: flutter pub get
+
+      - name: Analyze
+        if: inputs.run_checks
+        working-directory: ${{ inputs.app_dir }}
+        run: flutter analyze
+
+      - name: Tests
+        if: inputs.run_checks
+        working-directory: ${{ inputs.app_dir }}
+        run: flutter test --reporter expanded
+
+      - name: Write Play service-account key
+        if: inputs.upload_to_play
+        env:
+          SA_JSON: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+        run: |
+          printf '%s' "$SA_JSON" > "$RUNNER_TEMP/play-sa.json"
+          chmod 600 "$RUNNER_TEMP/play-sa.json"
+          python3 -c "import json;json.load(open('$RUNNER_TEMP/play-sa.json'))"
+
+      - name: Pick the next versionCode
+        id: vc
+        run: |
+          if [ "${{ inputs.upload_to_play }}" = "true" ]; then
+            # Play is the authority on what has already been used. Deriving the
+            # number from pubspec instead would silently collide the first time
+            # a build was uploaded from a laptop.
+            VC=$(python3 .erek-ci/scripts/play_publish.py \
+                   --service-account "$RUNNER_TEMP/play-sa.json" \
+                   --package "${{ inputs.package_name }}" \
+                   next-version-code)
+          else
+            VC=$GITHUB_RUN_NUMBER
+          fi
+          echo "value=$VC" >> "$GITHUB_OUTPUT"
+          echo "versionCode -> $VC"
+
+      - name: Install upload keystore
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+          STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          KS="$RUNNER_TEMP/upload.jks"
+          printf '%s' "$KEYSTORE_B64" | base64 -d > "$KS"
+          chmod 600 "$KS"
+          # storeFile is read through Gradle's file(), whose base directory
+          # differs between the groovy and kts variants of our app modules.
+          # An absolute path is the same under both.
+          cat > "${{ inputs.app_dir }}/android/key.properties" <<EOF
+          storePassword=$STORE_PASSWORD
+          keyPassword=$KEY_PASSWORD
+          keyAlias=$KEY_ALIAS
+          storeFile=$KS
+          EOF
+          chmod 600 "${{ inputs.app_dir }}/android/key.properties"
+
+      - name: Build app bundle
+        working-directory: ${{ inputs.app_dir }}
+        run: flutter build appbundle --release --build-number=${{ steps.vc.outputs.value }}
+
+      - name: Confirm the AAB is signed with the upload key
+        env:
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          AAB="${{ inputs.app_dir }}/build/app/outputs/bundle/release/app-release.aab"
+          # An unsigned AAB builds cleanly and is rejected only at upload time,
+          # after the minutes have been spent. Check it here instead.
+          if ! unzip -l "$AAB" | grep -q 'META-INF/.*\.\(RSA\|DSA\|EC\)'; then
+            echo "AAB carries no signature block" >&2
+            exit 1
+          fi
+          echo "signed OK ($(du -h "$AAB" | cut -f1))"
+
+      - name: Upload AAB artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.package_name }}-${{ steps.vc.outputs.value }}-aab
+          path: ${{ inputs.app_dir }}/build/app/outputs/bundle/release/app-release.aab
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Publish to Play
+        id: play
+        if: inputs.upload_to_play
+        run: |
+          NOTES=""
+          if [ -n "${{ inputs.release_notes_path }}" ] && [ -f "${{ inputs.release_notes_path }}" ]; then
+            NOTES="--release-notes ${{ inputs.release_notes_path }}"
+          fi
+          python3 .erek-ci/scripts/play_publish.py \
+            --service-account "$RUNNER_TEMP/play-sa.json" \
+            --package "${{ inputs.package_name }}" \
+            upload \
+            --aab "${{ inputs.app_dir }}/build/app/outputs/bundle/release/app-release.aab" \
+            --track "${{ inputs.track }}" \
+            --status "${{ inputs.status }}" \
+            --name "${{ inputs.track }} ${{ steps.vc.outputs.value }} (run ${{ github.run_number }})" \
+            $NOTES
+
+      - name: Scrub credentials from the workspace
+        if: always()
+        run: |
+          rm -f "$RUNNER_TEMP/upload.jks" "$RUNNER_TEMP/play-sa.json"
+          rm -f "${{ inputs.app_dir }}/android/key.properties"
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### ${{ inputs.package_name }}"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| track | \`${{ inputs.track }}\` |"
+            echo "| status | \`${{ inputs.status }}\` |"
+            echo "| versionCode | \`${{ steps.vc.outputs.value }}\` |"
+            echo "| sha1 | \`${{ steps.play.outputs.sha1 }}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"

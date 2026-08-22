@@ -1,0 +1,241 @@
+{
+  "_comment": "Erek Studio fleet manifest. repo = GitHub repo name; app_dir = path to pubspec.yaml inside it; keystore = filename under ~/keystores (null means no upload key exists yet, so Android release builds are impossible).",
+  "team_id": "X593LCYK54",
+  "flutter_version": "3.41.9",
+  "apps": [
+    {
+      "name": "Daylit",
+      "repo": "ai-planner",
+      "app_dir": ".",
+      "package": "com.erekstudio.aiplanner",
+      "asc_app_id": "6778850267",
+      "keystore": "daylit-upload.jks",
+      "key_alias": "daylit-upload",
+      "engine": "flutter",
+      "platforms": ["android", "ios"]
+    },
+    {
+      "name": "Colophon",
+      "repo": "colophon",
+      "app_dir": ".",
+      "package": "com.erekstudio.colophon",
+      "asc_app_id": "6789892808",
+      "keystore": "colophon-upload.jks",
+      "key_alias": "colophon",
+      "engine": "flutter",
+      "platforms": ["android", "ios"]
+    },
+    {
+      "name": "Onseol",
+      "repo": "dday",
+      "app_dir": ".",
+      "package": "com.erekstudio.dday",
+      "asc_app_id": "6782953468",
+      "keystore": "onseol-upload.jks",
+      "key_alias": "onseol",
+      "engine": "flutter",
+      "platforms": ["android", "ios"]
+    },
+    {
+      "name": "Doltap",
+      "repo": "doltap",
+      "app_dir": ".",
+      "package": "com.erekstudio.doltap",
+      "asc_app_id": "6790157885",
+      "keystore": "doltap-upload.jks",
+      "key_alias": "doltap",
+      "engine": "flutter",
+      "platforms": ["android", "ios"]
+    },
+    {
+      "name": "Evenfall",
+      "repo": "dusk",
+      "app_dir": ".",
+      "package": "com.erekstudio.dusk",
+      "asc_app_id": "6780204063",
+      "keystore": "evenfall-upload.jks",
+      "key_alias": "evenfall-upload",
+      "engine": "flutter",
+      "platforms": ["android", "ios"]
+    },
+    {
+      "name": "Kartenwerk",
+      "repo": "kartenwerk",
+      "app_dir": ".",
+      "package": "com.erekstudio.kartenwerk",
+      "asc_app_id": "6790163261",
+      "keystore": "kartenwerk-upload.jks",
+      "key_alias": "kartenwerk-upload",
+      "engine": "flutter",
+      "platforms": ["android", "ios"]
+    },
+    {
+      "name": "Lumora",
+      "repo": "lumora",
+      "app_dir": ".",
+      "package": "com.erekstudio.lumora",
+      "asc_app_id": "6801853863",
+      "keystore": "lumora-upload.jks",
+      "key_alias": "lumora",
+      "engine": "flutter",
+      "platforms": ["android", "ios"]
+    },
+    {
+      "name": "Micron",
+      "repo": "micron",
+      "app_dir": "app",
+      "package": "com.erekstudio.micron",
+      "asc_app_id": "6798277777",
+      "keystore": "micron-upload.jks",
+      "key_alias": "micron",
+      "engine": "flutter",
+      "platforms": ["android", "ios"]
+    },
+    {
+      "name": "Naqio",
+      "repo": "naqio",
+      "app_dir": "app",
+      "package": "com.erekstudio.naqio",
+      "asc_app_id": "6782854289",
+      "keystore": "naqio-upload.jks",
+      "key_alias": "naqio-upload",
+      "engine": "flutter",
+      "platforms": ["android", "ios"]
+    },
+    {
+      "name": "Orbion",
+      "repo": "orbion",
+      "app_dir": ".",
+      "package": "com.erekstudio.orbion",
+      "asc_app_id": "6799364072",
+      "keystore": "orbion-upload.jks",
+      "key_alias": "orbion",
+      "engine": "flutter",
+      "platforms": ["android", "ios"]
+    },
+    {
+      "name": "Ownio",
+      "repo": "ownio",
+      "app_dir": ".",
+      "package": "com.erekstudio.ownio",
+      "asc_app_id": "6803531224",
+      "keystore": null,
+      "key_alias": null,
+      "engine": "flutter",
+      "platforms": ["ios"],
+      "note": "No upload keystore exists. android/app/build.gradle.kts still signs release with the debug config, so an Android release build here would be unshippable."
+    },
+    {
+      "name": "PDF Privio",
+      "repo": "pdfprivio",
+      "app_dir": ".",
+      "package": "com.erekstudio.pdfprivio",
+      "asc_app_id": "6769985472",
+      "keystore": "privio-upload.jks",
+      "key_alias": "upload",
+      "engine": "flutter",
+      "platforms": ["android", "ios"]
+    },
+    {
+      "name": "Purrl",
+      "repo": "purrl",
+      "app_dir": "app",
+      "package": "com.erekstudio.purrl",
+      "asc_app_id": "6802005924",
+      "keystore": "purrl-upload.jks",
+      "key_alias": "purrl",
+      "engine": "flutter",
+      "platforms": ["android", "ios"]
+    },
+    {
+      "name": "Roast & Rich",
+      "repo": "roastandrich",
+      "app_dir": ".",
+      "package": "com.erekstudio.roastandrich",
+      "asc_app_id": "6794006254",
+      "keystore": "roastandrich-upload.jks",
+      "key_alias": "roastandrich",
+      "engine": "flutter",
+      "platforms": ["android", "ios"]
+    },
+    {
+      "name": "Saku",
+      "repo": "saku",
+      "app_dir": ".",
+      "package": "com.erekstudio.saku",
+      "asc_app_id": "6789562546",
+      "keystore": "saku-upload.jks",
+      "key_alias": "saku",
+      "engine": "flutter",
+      "platforms": ["android", "ios"]
+    },
+    {
+      "name": "Squeezly",
+      "repo": "squeezly",
+      "app_dir": ".",
+      "package": "com.squeezly.app",
+      "asc_app_id": "6766046501",
+      "keystore": "squeezly-upload.jks",
+      "key_alias": "upload",
+      "engine": "flutter",
+      "platforms": ["android", "ios"]
+    },
+    {
+      "name": "SYNC",
+      "repo": "sync",
+      "app_dir": ".",
+      "package": "com.erekstudio.sync",
+      "asc_app_id": "6799400522",
+      "keystore": "sync-upload.jks",
+      "key_alias": "sync",
+      "engine": "flutter",
+      "platforms": ["android", "ios"]
+    },
+    {
+      "name": "Verithe",
+      "repo": "verithe",
+      "app_dir": ".",
+      "package": "com.erekstudio.verithe",
+      "asc_app_id": "6800363058",
+      "keystore": "verithe-upload.jks",
+      "key_alias": "verithe",
+      "engine": "flutter",
+      "platforms": ["android", "ios"]
+    },
+    {
+      "name": "Waqt",
+      "repo": "waqt",
+      "app_dir": ".",
+      "package": "com.erekstudio.waqt",
+      "asc_app_id": "6793498575",
+      "keystore": "waqt-upload.jks",
+      "key_alias": "waqt-upload",
+      "engine": "flutter",
+      "platforms": ["android", "ios"]
+    },
+    {
+      "name": "Tapanic",
+      "repo": "blockpanic",
+      "app_dir": ".",
+      "package": "com.erekstudio.blockpanic",
+      "asc_app_id": "6797113191",
+      "keystore": "blockpanic-upload.jks",
+      "key_alias": "blockpanic",
+      "engine": "unity",
+      "platforms": [],
+      "note": "Unity. A hosted runner would need a Unity licence activation and a full editor install, so releases stay on the laptop for now."
+    },
+    {
+      "name": "Pofu",
+      "repo": "pofu",
+      "app_dir": ".",
+      "package": "com.erekstudio.pofu",
+      "asc_app_id": "6796339317",
+      "keystore": "pofu-upload.jks",
+      "key_alias": "pofu",
+      "engine": "godot",
+      "platforms": [],
+      "note": "Godot. Needs export templates on the runner; not wired yet."
+    }
+  ]
+}

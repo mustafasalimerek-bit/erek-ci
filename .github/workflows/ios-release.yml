@@ -1,0 +1,236 @@
+name: iOS release (reusable)
+
+# Archive, sign and upload to TestFlight.
+#
+# COST: macOS runners bill at 10x. A Flutter iOS build is roughly 20 minutes of
+# wall clock, so it spends about 200 minutes of the monthly allowance. This is
+# why nothing here runs on push — it is dispatch-only, on purpose.
+
+on:
+  workflow_call:
+    inputs:
+      app_dir:
+        type: string
+        default: "."
+      flutter_version:
+        type: string
+        default: "3.41.9"
+      asc_app_id:
+        description: Numeric App Store id, used to pick the next build number
+        type: string
+        required: true
+      team_id:
+        type: string
+        default: X593LCYK54
+      scheme:
+        type: string
+        default: Runner
+      wait_for_processing:
+        description: Block until App Store Connect finishes processing the build
+        type: boolean
+        default: true
+    secrets:
+      ASC_KEY_ID:
+        required: true
+      ASC_ISSUER_ID:
+        required: true
+      ASC_KEY_P8:
+        required: true
+      IOS_DIST_P12_B64:
+        required: true
+      IOS_DIST_P12_PASSWORD:
+        required: true
+    outputs:
+      build_number:
+        value: ${{ jobs.build.outputs.build_number }}
+
+jobs:
+  build:
+    name: IPA -> TestFlight
+    runs-on: macos-15
+    timeout-minutes: 90
+    outputs:
+      build_number: ${{ steps.bn.outputs.value }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch CI scripts
+        uses: actions/checkout@v4
+        with:
+          repository: mustafasalimerek-bit/erek-ci
+          path: .erek-ci
+          ref: main
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ inputs.flutter_version }}
+          channel: stable
+          cache: true
+
+      - name: Install App Store Connect API key
+        env:
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+        run: |
+          # altool and xcodebuild both look here by convention; our own script
+          # is handed the path explicitly.
+          mkdir -p ~/.appstoreconnect/private_keys
+          printf '%s' "$ASC_KEY_P8" > ~/.appstoreconnect/private_keys/AuthKey_$ASC_KEY_ID.p8
+          chmod 600 ~/.appstoreconnect/private_keys/AuthKey_$ASC_KEY_ID.p8
+          openssl ec -in ~/.appstoreconnect/private_keys/AuthKey_$ASC_KEY_ID.p8 -noout 2>/dev/null \
+            || openssl pkey -in ~/.appstoreconnect/private_keys/AuthKey_$ASC_KEY_ID.p8 -noout
+
+      - name: Pick the next build number
+        id: bn
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          VERSION=$(grep -m1 '^version:' "${{ inputs.app_dir }}/pubspec.yaml" \
+                    | awk '{print $2}' | cut -d+ -f1)
+          # App Store Connect is the authority here for the same reason Play is
+          # on Android: a build number already burned by a laptop upload is
+          # rejected, and pubspec cannot know about it.
+          BN=$(python3 .erek-ci/scripts/asc_publish.py \
+                 --key-id "$ASC_KEY_ID" --issuer-id "$ASC_ISSUER_ID" \
+                 --key-path ~/.appstoreconnect/private_keys/AuthKey_$ASC_KEY_ID.p8 \
+                 --app-id "${{ inputs.asc_app_id }}" \
+                 next-build-number)
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "value=$BN" >> "$GITHUB_OUTPUT"
+          echo "$VERSION ($BN)"
+
+      - name: Import distribution certificate
+        env:
+          P12_B64: ${{ secrets.IOS_DIST_P12_B64 }}
+          P12_PASSWORD: ${{ secrets.IOS_DIST_P12_PASSWORD }}
+        run: |
+          KEYCHAIN="$RUNNER_TEMP/build.keychain-db"
+          KEYCHAIN_PASSWORD=$(uuidgen)
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          printf '%s' "$P12_B64" | base64 -d > "$RUNNER_TEMP/dist.p12"
+          security import "$RUNNER_TEMP/dist.p12" -k "$KEYCHAIN" -P "$P12_PASSWORD" \
+            -T /usr/bin/codesign -T /usr/bin/security -f pkcs12
+          # Without this, codesign blocks on a UI prompt no one can answer.
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" >/dev/null
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+          rm -f "$RUNNER_TEMP/dist.p12"
+          security find-identity -v -p codesigning "$KEYCHAIN"
+
+      - name: Flutter configure (pub get, pods, Generated.xcconfig)
+        working-directory: ${{ inputs.app_dir }}
+        run: |
+          flutter pub get
+          flutter build ios --release --config-only \
+            --build-number=${{ steps.bn.outputs.value }}
+
+      - name: Archive
+        working-directory: ${{ inputs.app_dir }}/ios
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          set -o pipefail
+          # -allowProvisioningUpdates plus the API key is what lets a runner
+          # with no Apple ID signed in fetch the App Store profiles, including
+          # the ones for the widget/share extensions.
+          xcodebuild archive \
+            -workspace Runner.xcworkspace \
+            -scheme "${{ inputs.scheme }}" \
+            -configuration Release \
+            -archivePath "$RUNNER_TEMP/Runner.xcarchive" \
+            -destination 'generic/platform=iOS' \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath ~/.appstoreconnect/private_keys/AuthKey_$ASC_KEY_ID.p8 \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
+            DEVELOPMENT_TEAM="${{ inputs.team_id }}" \
+            | tail -40
+
+      - name: Export IPA
+        working-directory: ${{ inputs.app_dir }}/ios
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          set -o pipefail
+          # `app-store` was renamed to `app-store-connect` in Xcode 15.3; the old
+          # spelling is a hard error on newer toolchains, so read the version
+          # rather than guessing.
+          XCODE_MAJOR=$(xcodebuild -version | head -1 | awk '{print $2}' | cut -d. -f1)
+          if [ "$XCODE_MAJOR" -ge 15 ]; then METHOD=app-store-connect; else METHOD=app-store; fi
+          cat > "$RUNNER_TEMP/ExportOptions.plist" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key><string>$METHOD</string>
+            <key>teamID</key><string>${{ inputs.team_id }}</string>
+            <key>signingStyle</key><string>automatic</string>
+            <key>uploadSymbols</key><true/>
+            <key>destination</key><string>export</string>
+          </dict>
+          </plist>
+          EOF
+          xcodebuild -exportArchive \
+            -archivePath "$RUNNER_TEMP/Runner.xcarchive" \
+            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" \
+            -exportPath "$RUNNER_TEMP/ipa" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath ~/.appstoreconnect/private_keys/AuthKey_$ASC_KEY_ID.p8 \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
+            | tail -30
+          ls -lh "$RUNNER_TEMP/ipa"
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ipa-${{ steps.bn.outputs.version }}-${{ steps.bn.outputs.value }}
+          path: ${{ runner.temp }}/ipa/*.ipa
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Upload to App Store Connect
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          IPA=$(ls "$RUNNER_TEMP"/ipa/*.ipa | head -1)
+          xcrun altool --upload-app --type ios --file "$IPA" \
+            --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID"
+
+      - name: Wait for App Store Connect to finish processing
+        if: inputs.wait_for_processing
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          # "Upload accepted" is not "build usable". Poll until ASC says VALID,
+          # otherwise a rejected binary looks like a green run.
+          python3 .erek-ci/scripts/asc_publish.py \
+            --key-id "$ASC_KEY_ID" --issuer-id "$ASC_ISSUER_ID" \
+            --key-path ~/.appstoreconnect/private_keys/AuthKey_$ASC_KEY_ID.p8 \
+            --app-id "${{ inputs.asc_app_id }}" \
+            wait-for-build \
+            --version "${{ steps.bn.outputs.version }}" \
+            --build "${{ steps.bn.outputs.value }}"
+
+      - name: Scrub credentials
+        if: always()
+        run: |
+          security delete-keychain "$RUNNER_TEMP/build.keychain-db" 2>/dev/null || true
+          rm -rf ~/.appstoreconnect/private_keys
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### iOS ${{ steps.bn.outputs.version }} (${{ steps.bn.outputs.value }})"
+            echo ""
+            echo "App Store id \`${{ inputs.asc_app_id }}\` — TestFlight"
+          } >> "$GITHUB_STEP_SUMMARY"

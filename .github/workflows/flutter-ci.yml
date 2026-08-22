@@ -1,0 +1,69 @@
+name: Flutter checks (reusable)
+
+# The cheap gate: ubuntu, no secrets, safe to run on every push. Anything that
+# needs a signing key belongs in android-release.yml or ios-release.yml.
+
+on:
+  workflow_call:
+    inputs:
+      app_dir:
+        type: string
+        default: "."
+      flutter_version:
+        type: string
+        default: "3.41.9"
+      check_format:
+        type: boolean
+        default: false
+      check_l10n:
+        description: Regenerate localizations and fail if the committed output drifted
+        type: boolean
+        default: true
+
+jobs:
+  checks:
+    name: Analyze & test
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ inputs.flutter_version }}
+          channel: stable
+          cache: true
+
+      - name: Install dependencies
+        working-directory: ${{ inputs.app_dir }}
+        run: flutter pub get
+
+      - name: Format check
+        if: inputs.check_format
+        working-directory: ${{ inputs.app_dir }}
+        run: dart format --set-exit-if-changed lib test
+
+      - name: Analyze
+        working-directory: ${{ inputs.app_dir }}
+        run: flutter analyze
+
+      - name: Generated localizations are up to date
+        if: inputs.check_l10n
+        working-directory: ${{ inputs.app_dir }}
+        run: |
+          # gen_l10n output is derived, so an ARB edited without regenerating
+          # shows up here as a diff instead of as missing text on a screen.
+          if [ -f l10n.yaml ]; then
+            flutter gen-l10n
+            git diff --exit-code || {
+              echo "gen-l10n produced a diff — commit the regenerated files" >&2
+              exit 1
+            }
+          else
+            echo "no l10n.yaml, skipping"
+          fi
+
+      - name: Tests
+        working-directory: ${{ inputs.app_dir }}
+        run: flutter test --reporter expanded
