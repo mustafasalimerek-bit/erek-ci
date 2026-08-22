@@ -5,10 +5,12 @@ Auth is an RS256 service-account JWT signed with `openssl dgst -sha256 -sign`
 and exchanged for an OAuth token, so this runs on a bare ubuntu-latest runner
 with no `pip install` step to break.
 
-Two subcommands:
+Subcommands:
 
   next-version-code   print (highest versionCode Play has ever seen) + 1
   upload              upload an AAB, point a track at it, commit the edit
+  promote             move what is on one track to another (internal -> production)
+  status              print what is on every track
 
 `upload` compares the sha1 Play reports back against the local file's sha1 and
 exits non-zero if they differ. A 200 only means Play accepted the request; the
@@ -228,6 +230,112 @@ def cmd_upload(args):
             fh.write("sha1={}\n".format(local_sha1))
 
 
+TRACKS = ("internal", "alpha", "beta", "production")
+
+
+def read_track(token, pkg, edit_id, track):
+    return api(
+        token, "GET", "{}/applications/{}/edits/{}/tracks/{}".format(API, pkg, edit_id, track)
+    )
+
+
+def cmd_status(args):
+    token = access_token(load_sa(args.service_account))
+    edit_id = open_edit(token, args.package)
+    try:
+        for track in TRACKS:
+            try:
+                data = read_track(token, args.package, edit_id, track)
+            except SystemExit:
+                print("{:<11} —".format(track))
+                continue
+            releases = data.get("releases", [])
+            if not releases:
+                print("{:<11} (empty)".format(track))
+            for rel in releases:
+                codes = ",".join(rel.get("versionCodes", []) or ["—"])
+                fraction = rel.get("userFraction")
+                extra = " {:.0%}".format(fraction) if fraction else ""
+                print("{:<11} {:<8} {}{}".format(
+                    track, codes, rel.get("status", "?"), extra))
+    finally:
+        delete_edit(token, args.package, edit_id)
+
+
+def cmd_promote(args):
+    if args.status == "inProgress" and args.user_fraction is None:
+        raise SystemExit("--status inProgress needs --user-fraction (e.g. 0.1)")
+    if args.status != "inProgress" and args.user_fraction is not None:
+        raise SystemExit("--user-fraction only applies to --status inProgress")
+
+    token = access_token(load_sa(args.service_account))
+    edit_id = open_edit(token, args.package)
+    try:
+        source = read_track(token, args.package, edit_id, args.source)
+        releases = source.get("releases", [])
+        if not releases:
+            raise SystemExit("nothing on the {} track to promote".format(args.source))
+        # Newest first is not guaranteed, so pick by versionCode.
+        newest = max(
+            releases, key=lambda r: max(int(c) for c in r.get("versionCodes", ["0"]))
+        )
+        codes = newest.get("versionCodes", [])
+        if not codes:
+            raise SystemExit("the {} release has no versionCodes".format(args.source))
+        print("promote {} -> {}: versionCode {}".format(
+            args.source, args.target, ",".join(codes)))
+
+        release = {"status": args.status, "versionCodes": codes}
+        if args.user_fraction is not None:
+            release["userFraction"] = args.user_fraction
+        if newest.get("releaseNotes"):
+            # Carry the notes across rather than shipping a blank "What's new".
+            release["releaseNotes"] = newest["releaseNotes"]
+        if args.name:
+            release["name"] = args.name
+        elif newest.get("name"):
+            release["name"] = newest["name"]
+
+        api(
+            token,
+            "PUT",
+            "{}/applications/{}/edits/{}/tracks/{}".format(
+                API, args.package, edit_id, args.target
+            ),
+            body={"track": args.target, "releases": [release]},
+        )
+        api(token, "POST", "{}/applications/{}/edits/{}:commit".format(
+            API, args.package, edit_id))
+        print("commit OK")
+    except BaseException:
+        delete_edit(token, args.package, edit_id)
+        raise
+
+    # Read the committed state back through a fresh edit, same as upload does.
+    verify_edit = open_edit(token, args.package)
+    try:
+        target = read_track(token, args.package, verify_edit, args.target)
+    finally:
+        delete_edit(token, args.package, verify_edit)
+
+    live = [
+        r for r in target.get("releases", [])
+        if set(r.get("versionCodes", [])) == set(codes)
+    ]
+    if not live:
+        raise SystemExit(
+            "post-commit read-back: versionCode {} is not on {}".format(
+                ",".join(codes), args.target)
+        )
+    if live[0].get("status") != args.status:
+        raise SystemExit(
+            "post-commit read-back: status is {}, expected {}".format(
+                live[0].get("status"), args.status)
+        )
+    print("verify {} now holds versionCode {} ({})".format(
+        args.target, ",".join(codes), args.status))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--service-account", required=True, help="path to the SA JSON key")
@@ -239,16 +347,40 @@ def main():
 
     up = sub.add_parser("upload")
     up.add_argument("--aab", required=True)
-    up.add_argument("--track", default="internal")
+    up.add_argument("--track", default="internal", choices=list(TRACKS))
     up.add_argument(
         "--status",
         default="draft",
-        choices=["draft", "completed", "inProgress", "halted"],
+        # inProgress is deliberately absent: it requires a userFraction, which
+        # upload has no way to take, so offering it here would only produce a
+        # 400. Staged rollout is what `promote` is for.
+        choices=["draft", "completed"],
         help="draft never publishes anything; completed rolls out to the track",
     )
     up.add_argument("--name", default="", help="release name shown in Console")
     up.add_argument("--release-notes", default="", help="JSON: {\"en-US\": \"...\"}")
     up.set_defaults(func=cmd_upload)
+
+    pr = sub.add_parser("promote")
+    pr.add_argument("--source", default="internal", choices=list(TRACKS))
+    pr.add_argument("--target", default="production", choices=list(TRACKS))
+    pr.add_argument(
+        "--status",
+        default="completed",
+        choices=["draft", "completed", "inProgress", "halted"],
+        help="completed = everyone; inProgress = staged, needs --user-fraction",
+    )
+    pr.add_argument(
+        "--user-fraction",
+        type=float,
+        default=None,
+        help="staged rollout share, 0.0-1.0 (only with --status inProgress)",
+    )
+    pr.add_argument("--name", default="", help="release name shown in Console")
+    pr.set_defaults(func=cmd_promote)
+
+    st = sub.add_parser("status")
+    st.set_defaults(func=cmd_status)
 
     args = parser.parse_args()
     args.func(args)

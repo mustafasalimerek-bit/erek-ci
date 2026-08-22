@@ -66,6 +66,14 @@ jobs:
     name: AAB -> Play (${{ inputs.track }}/${{ inputs.status }})
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    concurrency:
+      # An impatient second tap on a phone is a real failure mode. Both runs
+      # would ask Play for the next versionCode, both would be told N, and the
+      # loser would die on a duplicate-versionCode error nobody can read. Queue
+      # instead of racing; never cancel, since the first run may already have
+      # uploaded.
+      group: android-release-${{ inputs.package_name }}
+      cancel-in-progress: false
     outputs:
       version_code: ${{ steps.play.outputs.version_code }}
       sha1: ${{ steps.play.outputs.sha1 }}
@@ -98,7 +106,13 @@ jobs:
       - name: Analyze
         if: inputs.run_checks
         working-directory: ${{ inputs.app_dir }}
-        run: flutter analyze
+        # Must match flutter-ci.yml. `flutter analyze` treats info lints as
+        # fatal by default, so plain `flutter analyze` here would block a
+        # release on the hundreds of prefer_const_constructors suggestions the
+        # fleet carries — the exact gate the CI workflow documents as
+        # unshippable. Two gates demanding different things is how the strict
+        # one gets switched off.
+        run: flutter analyze --no-fatal-infos
 
       - name: Tests
         if: inputs.run_checks
@@ -110,9 +124,19 @@ jobs:
         env:
           SA_JSON: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
         run: |
+          if [ -z "$SA_JSON" ]; then
+            echo "::error::PLAY_SERVICE_ACCOUNT_JSON is not set on this repo." \
+                 "Run erek-ops/tools/push-secrets.sh ${{ github.event.repository.name }}" \
+                 "from the laptop, or dispatch with upload_to_play unchecked to" \
+                 "build without publishing."
+            exit 1
+          fi
           printf '%s' "$SA_JSON" > "$RUNNER_TEMP/play-sa.json"
           chmod 600 "$RUNNER_TEMP/play-sa.json"
-          python3 -c "import json;json.load(open('$RUNNER_TEMP/play-sa.json'))"
+          # A truncated or mangled secret should say so here, not as a
+          # json.load traceback in the middle of the version-code step.
+          python3 -c "import json;json.load(open('$RUNNER_TEMP/play-sa.json'))" \
+            || { echo "::error::PLAY_SERVICE_ACCOUNT_JSON is not valid JSON"; exit 1; }
 
       - name: Pick the next versionCode
         id: vc
@@ -203,6 +227,8 @@ jobs:
 
       - name: Summary
         if: always()
+        # Turkish: this is the one screen the person who pressed the button
+        # reads, usually on a phone, and it has to end with what to do next.
         run: |
           {
             echo "### ${{ inputs.package_name }}"
@@ -210,7 +236,17 @@ jobs:
             echo "| | |"
             echo "|---|---|"
             echo "| track | \`${{ inputs.track }}\` |"
-            echo "| status | \`${{ inputs.status }}\` |"
+            echo "| durum | \`${{ inputs.status }}\` |"
             echo "| versionCode | \`${{ steps.vc.outputs.value }}\` |"
             echo "| sha1 | \`${{ steps.play.outputs.sha1 }}\` |"
+            echo ""
+            if [ "${{ inputs.upload_to_play }}" != "true" ]; then
+              echo "Play'e **yuklenmedi** — AAB yukarida artifact olarak duruyor."
+            elif [ "${{ inputs.status }}" = "draft" ]; then
+              echo "**Taslak olarak yuklendi — kimse goremiyor.**"
+              echo "Kullanicilara vermek icin: bu repoda **Promote** workflow'unu calistir"
+              echo "(\`${{ inputs.track }}\` -> \`production\`), ya da Play Console'dan \"Start rollout\"."
+            else
+              echo "**\`${{ inputs.track }}\` track'ine dagitildi.**"
+            fi
           } >> "$GITHUB_STEP_SUMMARY"

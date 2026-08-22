@@ -1,0 +1,118 @@
+name: Android promote (reusable)
+
+# Move what is already on one Play track onto another — the step that actually
+# puts an update in front of users.
+#
+# android-release.yml deliberately uploads as a draft, so nothing ships by
+# accident. This is the other half: a separate, explicit button. It runs on
+# ubuntu in about a minute, uploads nothing, and builds nothing — it only
+# points a track at a versionCode that is already on Play.
+#
+# Release notes ride along from the source release, so an update does not reach
+# users with a blank "What's new".
+
+on:
+  workflow_call:
+    inputs:
+      package_name:
+        type: string
+        required: true
+      source:
+        description: Track to take the build from
+        type: string
+        default: internal
+      target:
+        description: Track to put it on
+        type: string
+        default: production
+      status:
+        description: completed = everyone; inProgress = staged (needs user_fraction)
+        type: string
+        default: completed
+      user_fraction:
+        description: Staged rollout share, e.g. 0.1 for 10% (inProgress only)
+        type: string
+        default: ""
+    secrets:
+      PLAY_SERVICE_ACCOUNT_JSON:
+        required: true
+
+jobs:
+  promote:
+    name: ${{ inputs.source }} -> ${{ inputs.target }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency:
+      # Sharing the release group: promoting while an upload is mid-commit
+      # would have the two edits fighting over the same track.
+      group: android-release-${{ inputs.package_name }}
+      cancel-in-progress: false
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: mustafasalimerek-bit/erek-ci
+          ref: main
+
+      - name: Write Play service-account key
+        env:
+          SA_JSON: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+        run: |
+          if [ -z "$SA_JSON" ]; then
+            echo "::error::PLAY_SERVICE_ACCOUNT_JSON is not set on this repo." \
+                 "Run erek-ops/tools/push-secrets.sh from the laptop."
+            exit 1
+          fi
+          printf '%s' "$SA_JSON" > "$RUNNER_TEMP/play-sa.json"
+          chmod 600 "$RUNNER_TEMP/play-sa.json"
+          python3 -c "import json;json.load(open('$RUNNER_TEMP/play-sa.json'))" \
+            || { echo "::error::PLAY_SERVICE_ACCOUNT_JSON is not valid JSON"; exit 1; }
+
+      - name: Before
+        run: |
+          python3 scripts/play_publish.py \
+            --service-account "$RUNNER_TEMP/play-sa.json" \
+            --package "${{ inputs.package_name }}" status | tee /tmp/before.txt
+
+      - name: Promote
+        run: |
+          ARGS=()
+          if [ -n "${{ inputs.user_fraction }}" ]; then
+            ARGS+=(--user-fraction "${{ inputs.user_fraction }}")
+          fi
+          python3 scripts/play_publish.py \
+            --service-account "$RUNNER_TEMP/play-sa.json" \
+            --package "${{ inputs.package_name }}" \
+            promote \
+            --source "${{ inputs.source }}" \
+            --target "${{ inputs.target }}" \
+            --status "${{ inputs.status }}" \
+            "${ARGS[@]}"
+
+      - name: After
+        run: |
+          python3 scripts/play_publish.py \
+            --service-account "$RUNNER_TEMP/play-sa.json" \
+            --package "${{ inputs.package_name }}" status | tee /tmp/after.txt
+
+      - name: Scrub credentials
+        if: always()
+        run: rm -f "$RUNNER_TEMP/play-sa.json"
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### ${{ inputs.package_name }}"
+            echo ""
+            echo "\`${{ inputs.source }}\` -> \`${{ inputs.target }}\` (\`${{ inputs.status }}\`)"
+            echo ""
+            echo "**Once:**"
+            echo '```'
+            cat /tmp/before.txt 2>/dev/null || echo "-"
+            echo '```'
+            echo "**Sonra:**"
+            echo '```'
+            cat /tmp/after.txt 2>/dev/null || echo "-"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
