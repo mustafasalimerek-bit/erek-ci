@@ -46,7 +46,11 @@ jobs:
 
       - name: Analyze
         working-directory: ${{ inputs.app_dir }}
-        run: flutter analyze
+        # Errors and warnings block a release; `info` lints do not. The fleet
+        # carries hundreds of prefer_const_constructors and withOpacity
+        # suggestions, and gating shipping on those would mean the gate gets
+        # turned off — at which case the real warnings stop being seen too.
+        run: flutter analyze --no-fatal-infos
 
       - name: Generated localizations are up to date
         if: inputs.check_l10n
