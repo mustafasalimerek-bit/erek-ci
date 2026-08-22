@@ -81,6 +81,28 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Is another branch ahead of what we are building?
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Most of this fleet keeps its current work on feature branches, so
+          # "build main" can quietly mean "build code from three releases ago".
+          # This does not fail the run — building main is often exactly right —
+          # but it must not be silent either.
+          AHEAD=""
+          for b in $(gh api "repos/${{ github.repository }}/branches" --jq '.[].name' 2>/dev/null); do
+            [ "$b" = "${{ github.ref_name }}" ] && continue
+            n=$(gh api "repos/${{ github.repository }}/compare/${{ github.sha }}...$b" \
+                  --jq .ahead_by 2>/dev/null || echo 0)
+            [ "$n" -gt 0 ] && AHEAD="$AHEAD $b(+$n)"
+          done
+          if [ -n "$AHEAD" ]; then
+            echo "::warning::Building ${{ github.ref_name }}, but these branches carry commits it does not:$AHEAD"
+            echo "**Dikkat:** \`${{ github.ref_name }}\` derleniyor, ama su dallarda burada olmayan commit var:$AHEAD" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "no branch is ahead of the ref being built"
+          fi
+
       - name: Fetch CI scripts
         uses: actions/checkout@v4
         with:

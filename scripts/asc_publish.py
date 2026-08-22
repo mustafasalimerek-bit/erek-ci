@@ -114,14 +114,38 @@ CLOSED_STATES = {
 }
 
 
+def _parts(version):
+    """'1.10.2' -> (1, 10, 2), for ordering. Non-numeric pieces sort as 0."""
+    out = []
+    for piece in version.split("."):
+        try:
+            out.append(int(piece))
+        except ValueError:
+            out.append(0)
+    return tuple(out)
+
+
 def cmd_check_version(args, token):
-    """Fail before a 25-minute macOS build that Apple would reject anyway."""
+    """Fail before a 25-minute macOS build that Apple would reject anyway.
+
+    Apple enforces two separate rules and rejects on either. Checking only the
+    first would move the failure rather than remove it: a version *lower* than
+    the shipped one does not exist on App Store Connect at all, so an
+    exists-and-is-closed test waves it straight through to a rejection.
+    """
     versions = api(
         token,
         "/apps/{}/appStoreVersions".format(args.app_id),
         {"limit": 50},
     ).get("data", [])
 
+    shipped = [
+        v["attributes"]["versionString"]
+        for v in versions
+        if v["attributes"].get("appStoreState") in CLOSED_STATES
+    ]
+
+    # Rule 1: this exact version already shipped, so its train is closed.
     for version in versions:
         attrs = version["attributes"]
         if attrs.get("versionString") != args.version:
@@ -138,6 +162,20 @@ def cmd_check_version(args, token):
             )
         print("{} exists in state {} — still open for builds".format(args.version, state))
         return
+
+    # Rule 2: CFBundleShortVersionString must exceed the highest shipped one.
+    if shipped:
+        highest = max(shipped, key=_parts)
+        if _parts(args.version) <= _parts(highest):
+            raise SystemExit(
+                "pubspec surumu {} ama App Store'da {} yayinda.\n"
+                "  Yeni build'in surum numarasi yayindakinden BUYUK olmali.\n"
+                "  Muhtemel sebep: bu dalda surum satiri geride kalmis.\n"
+                "  pubspec.yaml'daki `version:` satirini en az {} yap.".format(
+                    args.version, highest, _bump(highest)
+                )
+            )
+
     print("{} is a new version — nothing on App Store Connect blocks it".format(args.version))
 
 
