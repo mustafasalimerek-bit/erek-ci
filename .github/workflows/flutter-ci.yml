@@ -73,6 +73,16 @@ jobs:
           flutter gen-l10n
           # Scoped to lib/l10n on purpose: `flutter pub get` can rewrite
           # pubspec.lock, and a repo-wide diff would fail on that instead.
+          #
+          # `git diff` cannot see a file that was never added, so adding a
+          # locale whose generated Dart was never committed would pass. Check
+          # untracked files too.
+          UNTRACKED=$(git status --porcelain --untracked-files=all -- lib/l10n | grep '^??' || true)
+          if [ -n "$UNTRACKED" ]; then
+            echo "gen-l10n produced files that are not committed:" >&2
+            echo "$UNTRACKED" >&2
+            exit 1
+          fi
           git diff --exit-code -- lib/l10n || {
             echo "gen-l10n changed the committed output — regenerate and commit" >&2
             exit 1

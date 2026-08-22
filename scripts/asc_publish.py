@@ -104,14 +104,46 @@ def cmd_next_build_number(args, token):
 # Once a version has shipped, Apple closes its pre-release train: any further
 # build carrying that CFBundleShortVersionString is rejected at upload with
 # "Invalid Pre-Release Train". These are the states that mean shipped.
+# `appVersionState` is the current field; `appStoreState` is deprecated and
+# will eventually stop being returned. Reading only the old one would leave the
+# check silently answering "?" — and letting a closed train through — on the
+# day Apple drops it. Both vocabularies are listed so either field answers.
 CLOSED_STATES = {
-    "READY_FOR_SALE",
-    "PROCESSING_FOR_APP_STORE",
+    # appVersionState
+    "READY_FOR_DISTRIBUTION",
     "PENDING_APPLE_RELEASE",
+    "PENDING_DEVELOPER_RELEASE",
     "REPLACED_WITH_NEW_VERSION",
     "REMOVED_FROM_SALE",
+    "PROCESSING_FOR_DISTRIBUTION",
+    # appStoreState (deprecated)
+    "READY_FOR_SALE",
+    "PROCESSING_FOR_APP_STORE",
     "DEVELOPER_REMOVED_FROM_SALE",
 }
+
+# Everything Apple can legitimately report while a version is still being
+# prepared. Anything outside both sets is unknown, and unknown must not read as
+# "go ahead".
+OPEN_STATES = {
+    "PREPARE_FOR_SUBMISSION",
+    "READY_FOR_REVIEW",
+    "WAITING_FOR_REVIEW",
+    "IN_REVIEW",
+    "PENDING_CONTRACT",
+    "WAITING_FOR_EXPORT_COMPLIANCE",
+    "REJECTED",
+    "METADATA_REJECTED",
+    "DEVELOPER_REJECTED",
+    "INVALID_BINARY",
+    "ACCEPTED",
+    "NOT_APPLICABLE",
+}
+
+
+def _state(attrs):
+    """Prefer the current field, fall back to the deprecated one."""
+    return attrs.get("appVersionState") or attrs.get("appStoreState") or "UNKNOWN"
 
 
 def _parts(version):
@@ -139,10 +171,16 @@ def cmd_check_version(args, token):
         {"limit": 50},
     ).get("data", [])
 
+    versions = [
+        v for v in versions
+        # A macOS or tvOS record with the same version string would otherwise
+        # be compared against an iOS upload.
+        if v["attributes"].get("platform") in (None, "IOS")
+    ]
     shipped = [
         v["attributes"]["versionString"]
         for v in versions
-        if v["attributes"].get("appStoreState") in CLOSED_STATES
+        if _state(v["attributes"]) in CLOSED_STATES
     ]
 
     # Rule 1: this exact version already shipped, so its train is closed.
@@ -150,7 +188,7 @@ def cmd_check_version(args, token):
         attrs = version["attributes"]
         if attrs.get("versionString") != args.version:
             continue
-        state = attrs.get("appStoreState", "?")
+        state = _state(attrs)
         if state in CLOSED_STATES:
             raise SystemExit(
                 "App Store Connect zaten {} surumunu yayinlamis ({}).\n"
@@ -158,6 +196,16 @@ def cmd_check_version(args, token):
                 "  pubspec.yaml'daki `version:` satirini yukselt "
                 "(ornek {} -> {}), sonra tekrar dene.".format(
                     args.version, state, args.version, _bump(args.version)
+                )
+            )
+        if state not in OPEN_STATES:
+            # A state neither set knows about is a state this check cannot
+            # reason about. Refusing is the only safe answer; passing would be
+            # a guess dressed as a green.
+            raise SystemExit(
+                "App Store Connect {} surumu icin taninmayan durum bildirdi: {}\n"
+                "  Bu kontrol o durumu yorumlayamiyor, devam etmiyor.".format(
+                    args.version, state
                 )
             )
         print("{} exists in state {} — still open for builds".format(args.version, state))
