@@ -234,6 +234,15 @@ jobs:
               )
           PY
 
+      - name: Process Firebase Android resources when config is provided
+        working-directory: ${{ inputs.app_dir }}/android
+        run: |
+          if [ ! -f app/google-services.json ]; then
+            echo "No Firebase Android config was installed; skipping Google Services processing."
+            exit 0
+          fi
+          ./gradlew :app:processReleaseGoogleServices --console=plain
+
       - name: Build app bundle
         working-directory: ${{ inputs.app_dir }}
         run: flutter build appbundle --release --build-number=${{ steps.vc.outputs.value }}
