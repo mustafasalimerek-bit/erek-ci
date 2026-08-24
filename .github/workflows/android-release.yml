@@ -236,6 +236,17 @@ jobs:
 
       - name: Build app bundle
         working-directory: ${{ inputs.app_dir }}
+        env:
+          # Private-repo ubuntu runners have about 7 GB of RAM. Several apps
+          # inherited Flutter's workstation-sized -Xmx8G/4G metaspace values;
+          # once Firebase lint models are present that can make the hosted VM
+          # reclaim the runner (SIGTERM/143) just before the AAB is written.
+          # A command-line system property wins over gradle.properties without
+          # changing the source tree or the bytes/config shipped by the app.
+          GRADLE_OPTS: >-
+            -Dorg.gradle.jvmargs=-Xmx4G
+            -XX:MaxMetaspaceSize=1G
+            -XX:ReservedCodeCacheSize=256m
         # Verbose output keeps every Gradle task in the release log, including
         # processReleaseGoogleServices, while Flutter bootstraps ignored wrapper
         # files before invoking Gradle for older projects.
