@@ -130,11 +130,23 @@ def commit_edit(token, pkg, edit_id, sent_for_review):
     params = ["changesInReviewBehavior=ERROR_IF_IN_REVIEW"]
     if not sent_for_review:
         params.append("changesNotSentForReview=true")
-    api(
-        token,
-        "POST",
-        "{}/applications/{}/edits/{}:commit?{}".format(API, pkg, edit_id, "&".join(params)),
+    url = "{}/applications/{}/edits/{}:commit?{}".format(
+        API, pkg, edit_id, "&".join(params)
     )
+    try:
+        api(token, "POST", url)
+    except SystemExit as exc:
+        # Some Play accounts now send edits for review automatically and reject
+        # changesNotSentForReview entirely. Keep ERROR_IF_IN_REVIEW on the retry:
+        # if unrelated Console changes are already being reviewed, the upload
+        # must fail safely instead of cancelling and resubmitting that review.
+        if sent_for_review or "changesNotSentForReview must not be set" not in str(exc):
+            raise
+        print("commit  Play auto-review account; retrying without changesNotSentForReview")
+        retry_url = "{}/applications/{}/edits/{}:commit?{}".format(
+            API, pkg, edit_id, "changesInReviewBehavior=ERROR_IF_IN_REVIEW"
+        )
+        api(token, "POST", retry_url)
 
 
 def open_edit(token, pkg):
