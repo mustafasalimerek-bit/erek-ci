@@ -53,6 +53,8 @@ on:
         required: true
       PLAY_SERVICE_ACCOUNT_JSON:
         required: false
+      FIREBASE_ANDROID_CONFIG_B64:
+        required: false
     outputs:
       version_code:
         description: The versionCode that was built
@@ -197,6 +199,40 @@ jobs:
           storeFile=$KS
           EOF
           chmod 600 "${{ inputs.app_dir }}/android/key.properties"
+
+      - name: Install Firebase Android config when provided
+        env:
+          FIREBASE_CONFIG_B64: ${{ secrets.FIREBASE_ANDROID_CONFIG_B64 }}
+        run: |
+          if [ -z "$FIREBASE_CONFIG_B64" ]; then
+            echo "FIREBASE_ANDROID_CONFIG_B64 is not set; skipping Firebase config."
+            exit 0
+          fi
+          TARGET="${{ inputs.app_dir }}/android/app/google-services.json"
+          if [ ! -d "$(dirname "$TARGET")" ]; then
+            echo "::error::Cannot write Firebase config: $(dirname "$TARGET") does not exist."
+            exit 1
+          fi
+          printf '%s' "$FIREBASE_CONFIG_B64" | base64 -d > "$TARGET"
+          chmod 600 "$TARGET"
+          python3 - "$TARGET" "${{ inputs.package_name }}" <<'PY'
+          import json
+          import sys
+
+          path, expected_package = sys.argv[1:]
+          with open(path, encoding="utf-8") as handle:
+              config = json.load(handle)
+          packages = {
+              client.get("client_info", {})
+              .get("android_client_info", {})
+              .get("package_name")
+              for client in config.get("client", [])
+          }
+          if expected_package not in packages:
+              raise SystemExit(
+                  f"::error::google-services.json does not contain package {expected_package}"
+              )
+          PY
 
       - name: Build app bundle
         working-directory: ${{ inputs.app_dir }}

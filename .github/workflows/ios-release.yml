@@ -49,6 +49,8 @@ on:
         required: true
       IOS_DIST_P12_PASSWORD:
         required: true
+      FIREBASE_IOS_CONFIG_B64:
+        required: false
     outputs:
       build_number:
         value: ${{ jobs.build.outputs.build_number }}
@@ -254,6 +256,76 @@ jobs:
           security find-identity -v -p codesigning "$KEYCHAIN" | tee /tmp/ids.txt
           grep -q "Apple Distribution" /tmp/ids.txt \
             || { echo "::error::no Apple Distribution identity in the keychain"; exit 1; }
+
+      - name: Install Firebase iOS config when provided
+        env:
+          FIREBASE_CONFIG_B64: ${{ secrets.FIREBASE_IOS_CONFIG_B64 }}
+        run: |
+          if [ -z "$FIREBASE_CONFIG_B64" ]; then
+            echo "FIREBASE_IOS_CONFIG_B64 is not set; skipping Firebase config."
+            exit 0
+          fi
+          TARGET="${{ inputs.app_dir }}/ios/Runner/GoogleService-Info.plist"
+          if [ ! -d "$(dirname "$TARGET")" ]; then
+            echo "::error::Cannot write Firebase config: $(dirname "$TARGET") does not exist."
+            exit 1
+          fi
+          printf '%s' "$FIREBASE_CONFIG_B64" | base64 -d > "$TARGET"
+          chmod 600 "$TARGET"
+          plutil -lint "$TARGET"
+          PROJECT="${{ inputs.app_dir }}/ios/Runner.xcodeproj/project.pbxproj"
+          if [ ! -f "$PROJECT" ]; then
+            echo "::error::Cannot verify Firebase config: $PROJECT does not exist."
+            exit 1
+          fi
+          APP_BUNDLE_ID=$(python3 - "$PROJECT" <<'PY'
+          import json
+          import subprocess
+          import sys
+
+          project = subprocess.run(
+              ["plutil", "-convert", "json", "-o", "-", sys.argv[1]],
+              check=True,
+              stdout=subprocess.PIPE,
+          )
+          objects = json.loads(project.stdout)["objects"]
+          runners = [
+              value
+              for value in objects.values()
+              if value.get("isa") == "PBXNativeTarget" and value.get("name") == "Runner"
+          ]
+          if len(runners) != 1:
+              raise SystemExit(f"expected one Runner target, found {len(runners)}")
+          config_list = objects[runners[0]["buildConfigurationList"]]
+          release_configs = [
+              objects[config_id]
+              for config_id in config_list["buildConfigurations"]
+              if objects[config_id].get("name") == "Release"
+          ]
+          if len(release_configs) != 1:
+              raise SystemExit(
+                  f"expected one Runner Release config, found {len(release_configs)}"
+              )
+          bundle_id = release_configs[0].get("buildSettings", {}).get(
+              "PRODUCT_BUNDLE_IDENTIFIER"
+          )
+          if not bundle_id:
+              raise SystemExit("Runner Release PRODUCT_BUNDLE_IDENTIFIER is empty")
+          print(bundle_id)
+          PY
+          ) || {
+            echo "::error::Could not read Runner Release PRODUCT_BUNDLE_IDENTIFIER from $PROJECT."
+            exit 1
+          }
+          CONFIG_BUNDLE_ID=$(plutil -extract BUNDLE_ID raw -o - "$TARGET") || {
+            echo "::error::Could not read BUNDLE_ID from Firebase config."
+            exit 1
+          }
+          if [ "$CONFIG_BUNDLE_ID" != "$APP_BUNDLE_ID" ]; then
+            echo "::error::GoogleService-Info.plist bundle id does not match the app." \
+                 "config=$CONFIG_BUNDLE_ID app=$APP_BUNDLE_ID"
+            exit 1
+          fi
 
       - name: Flutter configure (pub get, Generated.xcconfig)
         working-directory: ${{ inputs.app_dir }}
