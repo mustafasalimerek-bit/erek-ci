@@ -178,7 +178,7 @@ jobs:
       - name: Xcode is new enough for App Store uploads
         run: |
           xcodebuild -version
-          MAJOR=$(xcodebuild -version | head -1 | awk '{print $2}' | cut -d. -f1)
+          MAJOR=$(xcodebuild -version | awk 'NR == 1 { split($2, v, "."); print v[1] }')
           # Apple raises this floor periodically. Saying so here, in one line,
           # beats discovering it from altool after a full archive.
           if [ "$MAJOR" -lt 26 ]; then
@@ -387,7 +387,7 @@ jobs:
           # `app-store` was renamed to `app-store-connect` in Xcode 15.3; the
           # old spelling warns on newer toolchains. Read the version rather
           # than guessing.
-          XCODE_MAJOR=$(xcodebuild -version | head -1 | awk '{print $2}' | cut -d. -f1)
+          XCODE_MAJOR=$(xcodebuild -version | awk 'NR == 1 { split($2, v, "."); print v[1] }')
           if [ "$XCODE_MAJOR" -ge 15 ]; then METHOD=app-store-connect; else METHOD=app-store; fi
           cat > "$RUNNER_TEMP/ExportOptions.plist" <<EOF
           <?xml version="1.0" encoding="UTF-8"?>
