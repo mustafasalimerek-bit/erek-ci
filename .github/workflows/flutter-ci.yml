@@ -2,6 +2,11 @@ name: Flutter checks (reusable)
 
 # The cheap gate: ubuntu, no secrets, safe to run on every push. Anything that
 # needs a signing key belongs in android-release.yml or ios-release.yml.
+#
+# What the gate checks lives in scripts/flutter-preflight.sh. The pre-push hook
+# (hooks/pre-push) runs that same file on the Mac, on a clean checkout of the
+# commit, before anything reaches main. Change the gate there, not here, or the
+# two stop agreeing and the failure emails come back.
 
 on:
   workflow_call:
@@ -19,15 +24,29 @@ on:
         description: Regenerate localizations and fail if the committed output drifted
         type: boolean
         default: true
+      erek_ci_ref:
+        description: erek-ci revision whose scripts/flutter-preflight.sh runs; keep it equal to the ref this workflow is called at
+        type: string
+        default: "main"
 
 jobs:
   checks:
     name: Analyze & test
-    runs-on: ubuntu-latest
+    # Pinned rather than ubuntu-latest: that label moves to Ubuntu 26 from
+    # 2026-10-19, and a runner image changing under the gate is a failure
+    # email with no code change behind it. Move deliberately, after a canary.
+    runs-on: ubuntu-24.04
     timeout-minutes: 25
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
+
+      - name: Fetch the shared gate
+        uses: actions/checkout@v5
+        with:
+          repository: mustafasalimerek-bit/erek-ci
+          ref: ${{ inputs.erek_ci_ref }}
+          path: .erek-ci
 
       - uses: subosito/flutter-action@v2
         with:
@@ -35,59 +54,9 @@ jobs:
           channel: stable
           cache: true
 
-      - name: Install dependencies
-        working-directory: ${{ inputs.app_dir }}
-        run: flutter pub get
-
-      - name: Format check
-        if: inputs.check_format
-        working-directory: ${{ inputs.app_dir }}
-        run: dart format --set-exit-if-changed lib test
-
-      - name: Analyze
-        working-directory: ${{ inputs.app_dir }}
-        # Errors and warnings block a release; `info` lints do not. The fleet
-        # carries hundreds of prefer_const_constructors and withOpacity
-        # suggestions, and gating shipping on those would mean the gate gets
-        # turned off — at which case the real warnings stop being seen too.
-        run: flutter analyze --no-fatal-infos
-
-      - name: Generated localizations are up to date
-        if: inputs.check_l10n
-        working-directory: ${{ inputs.app_dir }}
-        run: |
-          # gen_l10n output is derived, so an ARB edited without regenerating
-          # should show up here as a diff rather than as missing text on a
-          # screen. That only works when the generated .dart files are actually
-          # committed — projects with no `output-dir` write into .dart_tool,
-          # which git never sees, and the check would pass no matter what.
-          if [ ! -f l10n.yaml ]; then
-            echo "no l10n.yaml — nothing to check"
-            exit 0
-          fi
-          if [ "$(git ls-files 'lib/l10n/*.dart' 'lib/l10n/**/*.dart' | wc -l)" -eq 0 ]; then
-            echo "generated localizations are not tracked in git (gen_l10n writes"
-            echo "to .dart_tool here) — this check cannot detect drift, skipping"
-            exit 0
-          fi
-          flutter gen-l10n
-          # Scoped to lib/l10n on purpose: `flutter pub get` can rewrite
-          # pubspec.lock, and a repo-wide diff would fail on that instead.
-          #
-          # `git diff` cannot see a file that was never added, so adding a
-          # locale whose generated Dart was never committed would pass. Check
-          # untracked files too.
-          UNTRACKED=$(git status --porcelain --untracked-files=all -- lib/l10n | grep '^??' || true)
-          if [ -n "$UNTRACKED" ]; then
-            echo "gen-l10n produced files that are not committed:" >&2
-            echo "$UNTRACKED" >&2
-            exit 1
-          fi
-          git diff --exit-code -- lib/l10n || {
-            echo "gen-l10n changed the committed output — regenerate and commit" >&2
-            exit 1
-          }
-
-      - name: Tests
-        working-directory: ${{ inputs.app_dir }}
-        run: flutter test --reporter expanded
+      - name: Analyze, localizations, tests
+        env:
+          APP_DIR: ${{ inputs.app_dir }}
+          CHECK_FORMAT: ${{ inputs.check_format }}
+          CHECK_L10N: ${{ inputs.check_l10n }}
+        run: bash .erek-ci/scripts/flutter-preflight.sh "$APP_DIR"

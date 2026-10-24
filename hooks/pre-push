@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# Erek fleet pre-push hook: nothing reaches main that the CI gate would reject.
+#
+# GitHub runs flutter-ci.yml on every push to main and emails when it fails.
+# This hook runs the same gate (scripts/flutter-preflight.sh) on the exact
+# commit being pushed, in a clean checkout, before the push leaves the Mac.
+# Only pushes that update refs/heads/main are checked: branch pushes (backups,
+# release branches, wip snapshots) start no CI and pass straight through.
+#
+# A commit checked earlier with scripts/preflight-commit.sh is not re-run, so
+# a session can check first (with a long timeout) and push in a second.
+#
+# Installed as a symlink by scripts/install-hooks.sh. For a genuine emergency:
+#   EREK_SKIP_PREFLIGHT=1 git push …   (GitHub CI still judges the commit)
+set -uo pipefail
+
+# Everything runs inside main(): bash parses a function whole before running
+# it, so a `git pull` of erek-ci while this is mid-run cannot change it.
+main() {
+
+self=$(realpath "$0" 2>/dev/null || python3 -c 'import os,sys;print(os.path.realpath(sys.argv[1]))' "$0")
+erek_ci=$(cd "$(dirname "$self")/.." && pwd)
+repo=$(git rev-parse --show-toplevel)
+zero=0000000000000000000000000000000000000000
+blocked=0
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+  [ "$remote_ref" = "refs/heads/main" ] || continue
+  [ "$local_sha" = "$zero" ] && continue # deleting main is not a CI question
+  if [ "${EREK_SKIP_PREFLIGHT:-}" = 1 ]; then
+    echo "erek pre-push: EREK_SKIP_PREFLIGHT=1 — ${local_sha:0:7} goes to main UNCHECKED; GitHub CI will judge it." >&2
+    continue
+  fi
+  echo "erek pre-push: ${local_sha:0:7} -> main must pass the CI gate first (clean checkout, can take minutes)" >&2
+  if ! "$erek_ci/scripts/preflight-commit.sh" "$repo" "$local_sha" < /dev/null >&2; then
+    blocked=1
+  fi
+done
+
+if [ $blocked -ne 0 ]; then
+  echo "erek pre-push: BLOCKED — GitHub CI would fail this commit and send a failure email." >&2
+  echo "erek pre-push: fix it, commit, and push again." >&2
+  exit 1
+fi
+exit 0
+}
+
+main "$@"
