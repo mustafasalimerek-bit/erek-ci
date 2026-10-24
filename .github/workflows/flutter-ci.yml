@@ -59,4 +59,7 @@ jobs:
           APP_DIR: ${{ inputs.app_dir }}
           CHECK_FORMAT: ${{ inputs.check_format }}
           CHECK_L10N: ${{ inputs.check_l10n }}
+          # The calling repo's own token (contents: read), for an app's
+          # tool/gate-prepare.sh to fetch its release assets with `gh`.
+          GH_TOKEN: ${{ github.token }}
         run: bash .erek-ci/scripts/flutter-preflight.sh "$APP_DIR"

@@ -11,11 +11,23 @@
 #   CHECK_FORMAT=true   also fail on `dart format` drift (off by default, as in CI)
 #   CHECK_L10N=false    skip the generated-localizations drift check
 #   TEST_REPORTER=...   `flutter test` reporter (default: expanded)
+#
+# An app whose tests need files git does not carry (colophon's ~180 MB
+# content.db) ships tool/gate-prepare.sh; it runs first, from app_dir. It runs
+# here rather than in the workflow so CI and the pre-push hook prepare the same
+# inputs. In CI it gets GH_TOKEN, enough to download this repo's release assets.
+# It must pin what it fetches by hash and fail when it cannot: a prepare step
+# that falls back to "no data" turns failing tests into skipped ones.
 set -euo pipefail
 
 cd "${1:-.}"
 
 step() { echo "== $*"; }
+
+if [ -f tool/gate-prepare.sh ]; then
+  step "tool/gate-prepare.sh"
+  bash tool/gate-prepare.sh
+fi
 
 step "flutter pub get"
 flutter pub get
