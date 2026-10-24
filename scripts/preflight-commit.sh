@@ -19,6 +19,10 @@ set -uo pipefail
 # Everything runs inside main(): bash parses a function whole before running
 # it, so a `git pull` of erek-ci while this is mid-run cannot change it.
 main() {
+# The repository is passed explicitly, so inherited repo-local git variables
+# (GIT_DIR from a hook running in a linked worktree, GIT_INDEX_FILE, ...)
+# can only point somewhere else. Flutter's own version lookup is one victim.
+unset $(git rev-parse --local-env-vars 2>/dev/null)
 
 self=$(realpath "$0" 2>/dev/null || python3 -c 'import os,sys;print(os.path.realpath(sys.argv[1]))' "$0")
 erek_ci=$(cd "$(dirname "$self")/.." && pwd)
@@ -61,6 +65,10 @@ fi
 
 want_flutter=$(manifest flutter_version)
 have_flutter=$(flutter --version 2>/dev/null | sed -n 's/^Flutter \([^ ]*\).*/\1/p' | head -1)
+if ! echo "$have_flutter" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+' || [ "${have_flutter#0.0.0}" != "$have_flutter" ]; then
+  echo "preflight: Flutter reports version '${have_flutter:-nothing}' — that is this Mac's environment, not the commit. Not judging ${sha:0:7}." >&2
+  exit 2
+fi
 if [ -n "$want_flutter" ] && [ "$want_flutter" != "$have_flutter" ]; then
   echo "preflight: WARNING — CI uses Flutter $want_flutter, this Mac has ${have_flutter:-none}; results may differ" >&2
 fi

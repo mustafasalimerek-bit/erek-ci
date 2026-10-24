@@ -21,6 +21,11 @@ main() {
 self=$(realpath "$0" 2>/dev/null || python3 -c 'import os,sys;print(os.path.realpath(sys.argv[1]))' "$0")
 erek_ci=$(cd "$(dirname "$self")/.." && pwd)
 repo=$(git rev-parse --show-toplevel)
+# A push from a linked worktree exports GIT_DIR (and friends) to this hook.
+# Left set, it leaks into everything below: Flutter reads its own version
+# with git and reports 0.0.0-unknown, and the gate's git calls look at the
+# wrong worktree. The repository is known now, so drop them.
+unset $(git rev-parse --local-env-vars)
 zero=0000000000000000000000000000000000000000
 blocked=0
 
@@ -32,14 +37,23 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     continue
   fi
   echo "erek pre-push: ${local_sha:0:7} -> main must pass the CI gate first (clean checkout, can take minutes)" >&2
-  if ! "$erek_ci/scripts/preflight-commit.sh" "$repo" "$local_sha" < /dev/null >&2; then
+  "$erek_ci/scripts/preflight-commit.sh" "$repo" "$local_sha" < /dev/null >&2
+  rc=$?
+  # 1 = the gate judged the commit; anything else = the gate could not run.
+  if [ $rc -eq 1 ]; then
     blocked=1
+  elif [ $rc -ne 0 ]; then
+    blocked=2
   fi
 done
 
-if [ $blocked -ne 0 ]; then
+if [ $blocked -eq 1 ]; then
   echo "erek pre-push: BLOCKED — GitHub CI would fail this commit and send a failure email." >&2
   echo "erek pre-push: fix it, commit, and push again." >&2
+  exit 1
+elif [ $blocked -eq 2 ]; then
+  echo "erek pre-push: BLOCKED — the gate could not run here (see the line above); nothing is known about the commit yet." >&2
+  echo "erek pre-push: fix the environment and push again; EREK_SKIP_PREFLIGHT=1 only with Mustafa's OK." >&2
   exit 1
 fi
 exit 0
