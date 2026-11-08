@@ -327,6 +327,15 @@ jobs:
             exit 1
           fi
 
+      # Flutter's CocoaPods podhelper ignores dev_dependency and installs dev
+      # plugins into Runner. Strip them only in this iOS build checkout;
+      # Android already excludes dev_dependency plugins from release builds.
+      - name: Strip iOS dev plugins
+        id: strip_dev_plugins
+        env:
+          APP_DIR: ${{ inputs.app_dir }}
+        run: bash .erek-ci/scripts/strip-ios-dev-plugins.sh "$APP_DIR"
+
       - name: Flutter configure (pub get, Generated.xcconfig)
         working-directory: ${{ inputs.app_dir }}
         run: |
@@ -351,6 +360,18 @@ jobs:
           # twenty minutes in on a 10x runner.
           pod install --repo-update
           test -d Pods || { echo "::error::pod install produced no Pods/"; exit 1; }
+
+      - name: Check release plugin registrant
+        working-directory: ${{ inputs.app_dir }}
+        run: |
+          REGISTRANT=ios/Runner/GeneratedPluginRegistrant.m
+          test -f "$REGISTRANT" \
+            || { echo "::error::Missing $REGISTRANT"; exit 1; }
+          if grep -nF 'IntegrationTestPlugin' "$REGISTRANT"; then
+            echo "::error::IntegrationTestPlugin is still registered for release."
+            exit 1
+          fi
+          echo "Release registrant gate passed: no IntegrationTestPlugin."
 
       - name: Archive
         working-directory: ${{ inputs.app_dir }}/ios
@@ -412,6 +433,38 @@ jobs:
             -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
             | tail -40
           ls -lh "$RUNNER_TEMP/ipa"/*.ipa
+
+      - name: Check IPA for dev plugin frameworks
+        env:
+          REMOVED_PLUGINS_FILE: ${{ steps.strip_dev_plugins.outputs.removed_file }}
+          IPA_DIR: ${{ runner.temp }}/ipa
+        run: |
+          set -euo pipefail
+          test -f "$REMOVED_PLUGINS_FILE" \
+            || { echo "::error::Missing removed-plugin manifest."; exit 1; }
+          LISTING=$(mktemp "$RUNNER_TEMP/ios-ipa-list.XXXXXX")
+          trap 'rm -f "$LISTING"' EXIT
+          shopt -s nullglob
+          IPAS=("$IPA_DIR"/*.ipa)
+          if [ "${#IPAS[@]}" -eq 0 ]; then
+            echo "::error::No IPA found for the dev-plugin gate."
+            exit 1
+          fi
+          for IPA in "${IPAS[@]}"; do
+            unzip -l "$IPA" > "$LISTING" \
+              || { echo "::error::Cannot list IPA: $IPA"; exit 1; }
+            while IFS= read -r PLUGIN; do
+              if [[ ! "$PLUGIN" =~ ^[a-z_][a-z0-9_]*$ ]]; then
+                echo "::error::Invalid plugin name in removed-plugin manifest."
+                exit 1
+              fi
+              if grep -E "Payload/[^/]+[.]app/Frameworks/${PLUGIN}[.]framework/" "$LISTING"; then
+                echo "::error::Dev plugin framework shipped in $(basename "$IPA"): $PLUGIN"
+                exit 1
+              fi
+            done < <( { printf '%s\n' integration_test; cat "$REMOVED_PLUGINS_FILE"; } | sort -u)
+            echo "IPA dev-plugin gate passed: $(basename "$IPA")"
+          done
 
       - name: Upload IPA artifact
         uses: actions/upload-artifact@v4
